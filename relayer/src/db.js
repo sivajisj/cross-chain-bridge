@@ -32,8 +32,8 @@ async function insertDetectedMessage(connectionString, msg) {
     `INSERT INTO bridge_messages
        (message_id, source_chain_id, destination_chain_id, source_tx_hash,
         source_log_index, source_block_number, sender, recipient, token,
-        amount, nonce, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'DETECTED')
+        amount, nonce, direction, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'DETECTED')
      ON CONFLICT (source_chain_id, source_tx_hash, source_log_index) DO NOTHING
      RETURNING *`,
     [
@@ -48,6 +48,7 @@ async function insertDetectedMessage(connectionString, msg) {
       msg.token,
       msg.amount.toString(),
       msg.nonce,
+      msg.direction || "LOCK",
     ]
   );
 

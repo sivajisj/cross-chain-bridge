@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS bridge_messages (
     token                   TEXT NOT NULL,
     amount                  NUMERIC(78, 0) NOT NULL,
     nonce                   TEXT NOT NULL,
+    direction               TEXT NOT NULL DEFAULT 'LOCK',
     status                  TEXT NOT NULL DEFAULT 'DETECTED',
     destination_tx_hash      TEXT,
     retry_count              INTEGER NOT NULL DEFAULT 0,
@@ -26,6 +27,9 @@ CREATE TABLE IF NOT EXISTS bridge_messages (
     -- makes re-scanning an overlapping block range safe.
     CONSTRAINT uq_source_event UNIQUE (source_chain_id, source_tx_hash, source_log_index)
 );
+
+-- Phase 3: existing deployments predate the direction column.
+ALTER TABLE bridge_messages ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'LOCK';
 
 CREATE INDEX IF NOT EXISTS idx_bridge_messages_status ON bridge_messages (status);
 CREATE INDEX IF NOT EXISTS idx_bridge_messages_retry ON bridge_messages (status, next_retry_at);

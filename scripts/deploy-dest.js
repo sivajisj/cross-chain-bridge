@@ -2,7 +2,7 @@ require("dotenv").config();
 const hre = require("hardhat");
 
 async function main() {
-  console.log("Deploying BridgeDest to Polygon Amoy (Phase 2 — multi-validator)...");
+  console.log("Deploying BridgeDest to Polygon Amoy (Phase 3 — multi-validator, multi-token)...");
 
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deployer address:", deployer.address);
@@ -42,6 +42,27 @@ async function main() {
   console.log("BridgeDest deployed to:", bridge.target);
   console.log("Threshold:", threshold, "of", validatorAddresses.length, "validators");
 
+  // ── Register the source token + deploy its wrapped counterpart ───────────
+  // Requires knowing the BridgeSource-side token address (from
+  // deployed-sepolia.json / deploy-source.js), passed via SOURCE_TOKEN_ADDRESS.
+  // Optional here since deploy-source.js may run against a different chain
+  // at a different time — run this step manually afterwards if omitted.
+  let wrappedToken = null;
+  if (process.env.SOURCE_TOKEN_ADDRESS) {
+    const minAmount = hre.ethers.parseEther("1");
+    const maxAmount = hre.ethers.parseEther("1000000");
+    const registerTx = await bridge.registerTokenWithWrapped(
+      process.env.SOURCE_TOKEN_ADDRESS, 18, minAmount, maxAmount,
+      "Wrapped Bridge Token", "wBRT"
+    );
+    await registerTx.wait();
+    wrappedToken = await bridge.wrappedTokens(process.env.SOURCE_TOKEN_ADDRESS);
+    console.log("Registered source token, wrapped token deployed to:", wrappedToken);
+  } else {
+    console.log("SOURCE_TOKEN_ADDRESS not set — skipping token registration. " +
+      "Call registerTokenWithWrapped() manually before bridging.");
+  }
+
   // ── Save addresses ────────────────────────────────────────────────────────
   const fs = require("fs");
   const addresses = {
@@ -50,6 +71,8 @@ async function main() {
     deployer: deployer.address,
     validators: validatorAddresses,
     threshold,
+    sourceToken: process.env.SOURCE_TOKEN_ADDRESS || null,
+    wrappedToken,
     timestamp: new Date().toISOString(),
   };
   fs.writeFileSync("deployed-amoy.json", JSON.stringify(addresses, null, 2));

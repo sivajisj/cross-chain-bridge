@@ -15,10 +15,10 @@ const TEST_DATABASE_URL =
 // second RPC endpoint. sourceChainId/destinationChainId are set equal
 // here purely to keep the test simple; in production they are 11155111
 // and 80002 respectively.
-describe("Relayer persistence and state machine (Phase 1)", function () {
+describe("Relayer persistence and state machine (Phase 1/3)", function () {
   this.timeout(60000);
 
-  let mockToken, bridgeSource, bridgeDest;
+  let mockToken, bridgeSource, bridgeDest, wrappedToken;
   let owner, user, relayer;
 
   const testConfig = {
@@ -47,15 +47,25 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     mockToken = await MockERC20.deploy();
 
+    // Phase 3: BridgeSource/BridgeDest both require validators + threshold
+    // and a registered token before anything can be locked or minted.
+    // The "relayer" signer acts as the single validator with threshold=1,
+    // which keeps these persistence tests simple while still exercising
+    // the real multi-sig, multi-token contracts.
     const BridgeSource = await ethers.getContractFactory("BridgeSource");
-    bridgeSource = await BridgeSource.deploy(mockToken.target);
+    bridgeSource = await BridgeSource.deploy([relayer.address], 1);
+    await bridgeSource.connect(owner).registerToken(
+      mockToken.target, 18, 1n, ethers.parseEther("1000000")
+    );
 
     const BridgeDest = await ethers.getContractFactory("BridgeDest");
-    // Phase 2: BridgeDest now requires validators + threshold.
-    // In this test the "relayer" signer acts as the single validator
-    // with threshold=1, which keeps the Phase 1 persistence tests
-    // simple while still exercising the real contract.
     bridgeDest = (await BridgeDest.deploy([relayer.address], 1)).connect(relayer);
+    await bridgeDest.connect(owner).registerTokenWithWrapped(
+      mockToken.target, 18, 1n, ethers.parseEther("1000000"), "Wrapped Bridge Token", "wBRT"
+    );
+
+    const WrappedToken = await ethers.getContractFactory("WrappedToken");
+    wrappedToken = WrappedToken.attach(await bridgeDest.wrappedTokens(mockToken.target));
 
     await mockToken.mint(user.address, ethers.parseEther("1000"));
     await mockToken.connect(user).approve(bridgeSource.target, ethers.parseEther("1000"));
@@ -68,7 +78,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
   }
 
   async function lockAndScan(amount) {
-    const tx = await bridgeSource.connect(user).lockTokens(amount);
+    const tx = await bridgeSource.connect(user).lockTokens(mockToken.target, amount);
     await tx.wait();
     const latestBlock = await ethers.provider.getBlockNumber();
     const found = await processor.scanForNewMessages({
@@ -101,7 +111,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
 
     const stored = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
     expect(stored.status).to.equal(STATES.COMPLETED);
-    expect(await bridgeDest.balanceOf(user.address)).to.equal(amount);
+    expect(await wrappedToken.balanceOf(user.address)).to.equal(amount);
   });
 
   it("does not finalize a message before enough confirmations", async function () {
@@ -121,7 +131,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
 
   it("does not create a duplicate row when the same block range is scanned twice", async function () {
     const amount = ethers.parseEther("20");
-    await bridgeSource.connect(user).lockTokens(amount);
+    await bridgeSource.connect(user).lockTokens(mockToken.target, amount);
     const latestBlock = await ethers.provider.getBlockNumber();
 
     const scanArgs = {
@@ -174,7 +184,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
 
     const stored = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
     expect(stored.status).to.equal(STATES.COMPLETED);
-    expect(await bridgeDest.balanceOf(user.address)).to.equal(amount);
+    expect(await wrappedToken.balanceOf(user.address)).to.equal(amount);
   });
 
   it("retries on destination transaction failure and stops after max retries", async function () {
@@ -194,13 +204,14 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
         databaseUrl: TEST_DATABASE_URL,
         bridgeDest,
         config: testConfig,
+        validatorWallets: [relayer],
       });
     }
 
     const stored = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
     expect(stored.status).to.equal(STATES.FAILED);
     expect(stored.retry_count).to.equal(testConfig.maxRetries + 1);
-    expect(await bridgeDest.balanceOf(user.address)).to.equal(0);
+    expect(await wrappedToken.balanceOf(user.address)).to.equal(0);
   });
 
   it("is idempotent: resubmitting an already-completed message mints nothing extra", async function () {
@@ -220,14 +231,72 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
     });
 
     const completed = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
-    const secondAttempt = await processor.submitMessage({
+    const secondAttempt = await processor.submitMintMessage({
       databaseUrl: TEST_DATABASE_URL,
       bridgeDest,
       config: testConfig,
       message: completed,
+      validatorWallets: [relayer],
     });
 
     expect(secondAttempt).to.be.null; // not FINALIZED/RETRYING anymore, so it's a no-op
-    expect(await bridgeDest.balanceOf(user.address)).to.equal(amount);
+    expect(await wrappedToken.balanceOf(user.address)).to.equal(amount);
+  });
+
+  it("processes a burn -> unlock flow end to end (Amoy -> Sepolia direction)", async function () {
+    const amount = ethers.parseEther("40");
+
+    // Get real tokens locked and minted first so there's both a wrapped
+    // balance to burn and an underlying balance on the source side to unlock.
+    const lockMessage = await lockAndScan(amount);
+    await mineBlocks(testConfig.confirmationsRequired);
+    await processor.checkFinality({
+      databaseUrl: TEST_DATABASE_URL,
+      sourceProvider: ethers.provider,
+      config: testConfig,
+    });
+    await processor.processReadyMessages({
+      databaseUrl: TEST_DATABASE_URL,
+      bridgeDest,
+      config: testConfig,
+      validatorWallets: [relayer],
+    });
+    expect((await db.getMessageById(TEST_DATABASE_URL, lockMessage.message_id)).status)
+      .to.equal(STATES.COMPLETED);
+
+    // Now burn the wrapped tokens and drive them through the relayer's
+    // burn-scanning / unlock-submission path.
+    const tx = await bridgeDest.connect(user).burn(mockToken.target, amount);
+    await tx.wait();
+    const latestBlock = await ethers.provider.getBlockNumber();
+
+    const burnFound = await processor.scanForBurnMessages({
+      databaseUrl: TEST_DATABASE_URL,
+      bridgeDest,
+      config: testConfig,
+      fromBlock: latestBlock,
+      toBlock: latestBlock,
+    });
+    expect(burnFound.length).to.equal(1);
+    expect(burnFound[0].status).to.equal(STATES.CONFIRMING);
+
+    await mineBlocks(testConfig.confirmationsRequired);
+    await processor.checkFinality({
+      databaseUrl: TEST_DATABASE_URL,
+      sourceProvider: ethers.provider,
+      destProvider: ethers.provider,
+      config: testConfig,
+    });
+    await processor.processReadyMessages({
+      databaseUrl: TEST_DATABASE_URL,
+      bridgeSource,
+      config: testConfig,
+      validatorWallets: [relayer],
+    });
+
+    const stored = await db.getMessageById(TEST_DATABASE_URL, burnFound[0].message_id);
+    expect(stored.status).to.equal(STATES.COMPLETED);
+    expect(await wrappedToken.balanceOf(user.address)).to.equal(0);
+    expect(await mockToken.balanceOf(user.address)).to.equal(ethers.parseEther("1000"));
   });
 });
