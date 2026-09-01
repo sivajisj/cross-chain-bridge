@@ -27,6 +27,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
     confirmationsRequired: 3,
     maxRetries: 2,
     retryBaseDelayMs: 0,
+    threshold: 1,
   };
 
   before(async function () {
@@ -50,8 +51,11 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
     bridgeSource = await BridgeSource.deploy(mockToken.target);
 
     const BridgeDest = await ethers.getContractFactory("BridgeDest");
-    bridgeDest = (await BridgeDest.deploy()).connect(relayer);
-    await bridgeDest.connect(owner).transferOwnership(relayer.address);
+    // Phase 2: BridgeDest now requires validators + threshold.
+    // In this test the "relayer" signer acts as the single validator
+    // with threshold=1, which keeps the Phase 1 persistence tests
+    // simple while still exercising the real contract.
+    bridgeDest = (await BridgeDest.deploy([relayer.address], 1)).connect(relayer);
 
     await mockToken.mint(user.address, ethers.parseEther("1000"));
     await mockToken.connect(user).approve(bridgeSource.target, ethers.parseEther("1000"));
@@ -92,6 +96,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
       databaseUrl: TEST_DATABASE_URL,
       bridgeDest,
       config: testConfig,
+      validatorWallets: [relayer],
     });
 
     const stored = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
@@ -164,6 +169,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
       databaseUrl: TEST_DATABASE_URL,
       bridgeDest,
       config: testConfig,
+      validatorWallets: [relayer],
     });
 
     const stored = await db.getMessageById(TEST_DATABASE_URL, message.message_id);
@@ -181,7 +187,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
       config: testConfig,
     });
 
-    await bridgeDest.pauseBridge(); // makes every mint() revert
+    await bridgeDest.connect(owner).pauseBridge(); // makes every mint() revert
 
     for (let attempt = 0; attempt <= testConfig.maxRetries; attempt++) {
       await processor.processReadyMessages({
@@ -210,6 +216,7 @@ describe("Relayer persistence and state machine (Phase 1)", function () {
       databaseUrl: TEST_DATABASE_URL,
       bridgeDest,
       config: testConfig,
+      validatorWallets: [relayer],
     });
 
     const completed = await db.getMessageById(TEST_DATABASE_URL, message.message_id);

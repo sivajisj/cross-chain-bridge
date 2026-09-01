@@ -367,7 +367,7 @@ See [SECURITY.md](./SECURITY.md) for full risk analysis and mitigation plan.
 
 ## Tech Stack
 
-- **Solidity 0.8.20** — Smart contracts
+- **Solidity 0.8.28** — Smart contracts
 - **Hardhat** — Development + testing framework
 - **OpenZeppelin** — `ReentrancyGuard`, `Ownable`, `Pausable`, `ERC20`
 - **ethers.js v6** — Blockchain interaction

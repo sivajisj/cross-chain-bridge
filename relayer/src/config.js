@@ -28,6 +28,7 @@ const config = {
   pollIntervalMs: int("POLL_INTERVAL_MS", 15000),
   startBlockLookback: int("START_BLOCK_LOOKBACK", 2000),
   eventScanBatchSize: int("EVENT_SCAN_BATCH_SIZE", 2000),
+  threshold: int("THRESHOLD", 3),
 };
 
 module.exports = config;

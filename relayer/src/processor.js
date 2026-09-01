@@ -1,6 +1,8 @@
 const db = require("./db");
 const { computeMessageId } = require("./messageId");
 const { STATES, assertTransition } = require("./stateMachine");
+const { collectSignatures } = require("./collector");
+
 
 function backoffDelayMs(retryCount, baseDelayMs) {
   return baseDelayMs * Math.pow(2, retryCount);
@@ -94,29 +96,51 @@ async function failOrRetry({ databaseUrl, config, message, error }) {
 }
 
 // Attempt to submit exactly one FINALIZED or RETRYING message to the
-// destination chain. The atomic transitionStatus() claim is what makes
-// this safe to call more than once, or from more than one process, for
-// the same message: only whoever wins the UPDATE actually sends a tx.
-async function submitMessage({ databaseUrl, bridgeDest, config, message }) {
+// destination chain. Now requires threshold validator signatures via
+// EIP-712 before the contract will accept the mint.
+async function submitMessage({ databaseUrl, bridgeDest, config, message, validatorWallets }) {
   const fromStatus = message.status;
   if (![STATES.FINALIZED, STATES.RETRYING].includes(fromStatus)) return null;
 
-  // If the destination contract already shows this nonce as processed
-  // (for example a previous run's transaction landed but the process
-  // died before it could record COMPLETED), reconcile instead of
-  // sending a second transaction.
-  const alreadyProcessedOnChain = await bridgeDest.processedNonces(message.message_id);
-  if (alreadyProcessedOnChain) {
+  // Check if already processed on-chain (crash recovery path)
+  const alreadyProcessed = await bridgeDest.processedNonces(message.message_id);
+  if (alreadyProcessed) {
     assertTransition(fromStatus, STATES.COMPLETED);
     return db.transitionStatus(databaseUrl, message.message_id, [fromStatus], STATES.COMPLETED);
   }
 
   assertTransition(fromStatus, STATES.SUBMITTED);
-  const claimed = await db.transitionStatus(databaseUrl, message.message_id, [fromStatus], STATES.SUBMITTED);
-  if (!claimed) return null; // someone else already claimed this message
+  const claimed = await db.transitionStatus(
+    databaseUrl, message.message_id, [fromStatus], STATES.SUBMITTED
+  );
+  if (!claimed) return null;
 
   try {
-    const tx = await bridgeDest.mint(message.recipient, message.amount, message.message_id);
+    const mintRequest = {
+      messageId:     message.message_id,
+      recipient:     message.recipient,
+      amount:        message.amount,
+      sourceChainId: BigInt(message.source_chain_id),
+      destChainId:   BigInt(message.destination_chain_id),
+    };
+
+    console.log(`Collecting signatures for message ${message.message_id.slice(0, 10)}...`);
+    const { signatures, signers } = await collectSignatures(
+      validatorWallets,
+      bridgeDest,
+      mintRequest,
+      config.threshold
+    );
+    console.log(`Threshold reached (${signers.length} signatures). Submitting...`);
+
+    const tx = await bridgeDest.mint(
+      mintRequest.recipient,
+      mintRequest.amount,
+      mintRequest.messageId,
+      mintRequest.sourceChainId,
+      signatures
+    );
+
     await db.transitionStatus(databaseUrl, message.message_id, [STATES.SUBMITTED], STATES.SUBMITTED, {
       destination_tx_hash: tx.hash,
     });
@@ -126,26 +150,22 @@ async function submitMessage({ databaseUrl, bridgeDest, config, message }) {
       assertTransition(STATES.SUBMITTED, STATES.COMPLETED);
       return db.transitionStatus(databaseUrl, message.message_id, [STATES.SUBMITTED], STATES.COMPLETED);
     }
-    return failOrRetry({ databaseUrl, config, message: claimed, error: "destination transaction reverted" });
+    return failOrRetry({ databaseUrl, config, message: claimed, error: "destination tx reverted" });
   } catch (err) {
     return failOrRetry({ databaseUrl, config, message: claimed, error: err.message });
   }
 }
-
-// One pass over everything ready to submit right now: freshly FINALIZED
-// messages, plus RETRYING messages whose backoff window has elapsed.
-async function processReadyMessages({ databaseUrl, bridgeDest, config }) {
+async function processReadyMessages({ databaseUrl, bridgeDest, config, validatorWallets }) {
   const finalized = await db.getMessagesByStatus(databaseUrl, STATES.FINALIZED, config.sourceChainId);
   const retrying = await db.getRetryableMessages(databaseUrl);
 
   const results = [];
   for (const message of [...finalized, ...retrying]) {
-    const result = await submitMessage({ databaseUrl, bridgeDest, config, message });
+    const result = await submitMessage({ databaseUrl, bridgeDest, config, message, validatorWallets });
     if (result) results.push(result);
   }
   return results;
 }
-
 // Run once on boot. Anything not COMPLETED or FAILED survived the last
 // crash in some intermediate state. CONFIRMING/FINALIZED/RETRYING just
 // re-enter the normal pipeline on the next tick. SUBMITTED is the

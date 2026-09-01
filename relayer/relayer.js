@@ -7,31 +7,55 @@ const processor = require("./src/processor");
 const BridgeSourceABI = require("./abis/BridgeSource.json");
 const BridgeDestABI = require("./abis/BridgeDest.json");
 
-// ── providers (one per chain) ──────────────────────────────────
+// ── Providers ───────────────────────────────────────────────────────────────
 const sourceProvider = new ethers.JsonRpcProvider(config.sepoliaRpcUrl);
-const destProvider = new ethers.JsonRpcProvider(config.amoyRpcUrl);
+const destProvider   = new ethers.JsonRpcProvider(config.amoyRpcUrl);
 
-// ── relayer wallet (signs mint() txs on the destination chain) ─
-const relayerWallet = new ethers.Wallet(config.relayerPrivateKey, destProvider);
+// ── Validator wallets ────────────────────────────────────────────────────────
+// In production these are 5 separate machines each holding one key.
+// For Phase 2 we load all 5 keys from environment variables — the
+// signature collection logic is identical, only the transport differs.
+// At minimum VALIDATOR_KEY_1 through VALIDATOR_KEY_5 must be set.
+// The relayer submits transactions using VALIDATOR_KEY_1's wallet.
+function loadValidatorWallets() {
+  const wallets = [];
+  for (let i = 1; i <= 5; i++) {
+    const key = process.env[`VALIDATOR_KEY_${i}`];
+    if (!key) {
+      if (i <= config.threshold) {
+        throw new Error(`VALIDATOR_KEY_${i} is required (threshold is ${config.threshold})`);
+      }
+      break;
+    }
+    wallets.push(new ethers.Wallet(key, destProvider));
+  }
+  if (wallets.length < config.threshold) {
+    throw new Error(`Need at least ${config.threshold} validator keys (VALIDATOR_KEY_1 ... VALIDATOR_KEY_${config.threshold})`);
+  }
+  return wallets;
+}
 
-// ── contracts ───────────────────────────────────────────────────
+const validatorWallets = loadValidatorWallets();
+
+// The first validator wallet signs and submits the transaction.
+// All validator wallets contribute signatures.
+const submitterWallet = validatorWallets[0];
+
+// ── Contracts ────────────────────────────────────────────────────────────────
 const bridgeSource = new ethers.Contract(
   config.bridgeSourceAddress,
   BridgeSourceABI.abi,
-  sourceProvider // read-only, just scanning for events
+  sourceProvider
 );
 
 const bridgeDest = new ethers.Contract(
   config.bridgeDestAddress,
   BridgeDestABI.abi,
-  relayerWallet // needs a signer to call mint()
+  submitterWallet // needs a signer to call mint()
 );
 
 let stopping = false;
 
-// One full cycle: scan for new locks, advance confirmations, submit
-// anything that's ready. Every step is idempotent, so it is always
-// safe to run this again even if the previous tick crashed midway.
 async function tick() {
   try {
     const latestBlock = await sourceProvider.getBlockNumber();
@@ -70,6 +94,7 @@ async function tick() {
       databaseUrl: config.databaseUrl,
       bridgeDest,
       config,
+      validatorWallets,
     });
 
     for (const message of processed) {
@@ -81,13 +106,15 @@ async function tick() {
 }
 
 async function start() {
-  console.log("Relayer starting...");
-  console.log("Relayer wallet:", relayerWallet.address);
+  console.log("Relayer starting (Phase 2 — multi-validator)...");
+  console.log(`Validators loaded: ${validatorWallets.length}`);
+  validatorWallets.forEach((w, i) => console.log(`  Validator ${i + 1}: ${w.address}`));
+  console.log(`Threshold: ${config.threshold}-of-${validatorWallets.length}`);
 
   await db.migrate(config.databaseUrl);
   console.log("Database schema ready.");
 
-  console.log("Recovering unfinished messages from the previous run...");
+  console.log("Recovering unfinished messages...");
   const recovered = await processor.recoverUnfinishedMessages({
     databaseUrl: config.databaseUrl,
     destProvider,
@@ -96,27 +123,19 @@ async function start() {
   });
   console.log(`Recovery pass touched ${recovered.length} message(s).`);
 
-  console.log(
-    `Polling every ${config.pollIntervalMs}ms, ${config.confirmationsRequired} confirmations required, ` +
-      `max ${config.maxRetries} retries.`
-  );
+  console.log(`Polling every ${config.pollIntervalMs}ms, ${config.confirmationsRequired} confirmations required.`);
 
   while (!stopping) {
     await tick();
-    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
+    await new Promise((r) => setTimeout(r, config.pollIntervalMs));
   }
 
   console.log("Relayer stopped.");
   await db.closePool();
 }
 
-process.on("SIGINT", () => {
-  console.log("\nShutting down...");
-  stopping = true;
-});
-process.on("SIGTERM", () => {
-  stopping = true;
-});
+process.on("SIGINT",  () => { console.log("\nShutting down..."); stopping = true; });
+process.on("SIGTERM", () => { stopping = true; });
 
 start().catch((err) => {
   console.error("Fatal relayer error:", err);

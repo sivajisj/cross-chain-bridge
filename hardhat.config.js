@@ -10,7 +10,12 @@ const {
 } = process.env;
 
 module.exports = {
-  solidity: "0.8.20",
+  solidity: {
+    version: "0.8.28",
+    settings: {
+      evmVersion: "cancun",
+    },
+  },
 
   networks: {
     sepolia: {
