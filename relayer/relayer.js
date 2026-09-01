@@ -4,6 +4,8 @@ const { ethers } = require("ethers");
 const config = require("./src/config");
 const db = require("./src/db");
 const processor = require("./src/processor");
+const logger = require("./src/logger");
+const { startApiServer } = require("./src/api");
 const BridgeSourceABI = require("./abis/BridgeSource.json");
 const BridgeDestABI = require("./abis/BridgeDest.json");
 
@@ -71,7 +73,7 @@ async function scanChain({ provider, chainId, scanFn, contractArgKey, contract, 
   });
 
   if (detected.length > 0) {
-    console.log(`Detected ${detected.length} new ${label} event(s) in blocks ${fromBlock}-${toBlock}`);
+    logger.info("events_detected", { label, count: detected.length, fromBlock, toBlock });
   }
   await db.setCursor(config.databaseUrl, chainId, toBlock);
 }
@@ -114,23 +116,29 @@ async function tick() {
     });
 
     for (const message of processed) {
-      console.log(`Message ${message.message_id} -> ${message.status}`);
+      logger.info("message_status_changed", { messageId: message.message_id, status: message.status });
     }
   } catch (err) {
-    console.error("Relayer tick failed:", err.message);
+    logger.error("relayer_tick_failed", { error: err.message });
   }
 }
 
 async function start() {
-  console.log("Relayer starting (Phase 3 — bidirectional, multi-token)...");
-  console.log(`Validators loaded: ${destValidatorWallets.length}`);
-  destValidatorWallets.forEach((w, i) => console.log(`  Validator ${i + 1}: ${w.address}`));
-  console.log(`Threshold: ${config.threshold}-of-${destValidatorWallets.length}`);
+  logger.info("relayer_starting", { phase: "5 — monitoring + explorer" });
+  logger.info("validators_loaded", {
+    count: destValidatorWallets.length,
+    addresses: destValidatorWallets.map((w) => w.address),
+    threshold: config.threshold,
+  });
 
   await db.migrate(config.databaseUrl);
-  console.log("Database schema ready.");
+  logger.info("database_ready");
 
-  console.log("Recovering unfinished messages...");
+  const apiPort = parseInt(process.env.API_PORT || "3001", 10);
+  startApiServer(config.databaseUrl, apiPort);
+  logger.info("api_server_started", { port: apiPort });
+
+  logger.info("recovering_unfinished_messages");
   const recovered = await processor.recoverUnfinishedMessages({
     databaseUrl: config.databaseUrl,
     sourceProvider,
@@ -139,23 +147,26 @@ async function start() {
     bridgeDest,
     config,
   });
-  console.log(`Recovery pass touched ${recovered.length} message(s).`);
+  logger.info("recovery_complete", { touched: recovered.length });
 
-  console.log(`Polling every ${config.pollIntervalMs}ms, ${config.confirmationsRequired} confirmations required.`);
+  logger.info("polling_started", {
+    intervalMs: config.pollIntervalMs,
+    confirmationsRequired: config.confirmationsRequired,
+  });
 
   while (!stopping) {
     await tick();
     await new Promise((r) => setTimeout(r, config.pollIntervalMs));
   }
 
-  console.log("Relayer stopped.");
+  logger.info("relayer_stopped");
   await db.closePool();
 }
 
-process.on("SIGINT",  () => { console.log("\nShutting down..."); stopping = true; });
+process.on("SIGINT",  () => { logger.info("shutdown_signal", { signal: "SIGINT" }); stopping = true; });
 process.on("SIGTERM", () => { stopping = true; });
 
 start().catch((err) => {
-  console.error("Fatal relayer error:", err);
+  logger.error("fatal_relayer_error", { error: err.message, stack: err.stack });
   process.exit(1);
 });

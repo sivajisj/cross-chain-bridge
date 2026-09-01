@@ -1,8 +1,11 @@
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { render, screen } from "@testing-library/react";
+import App from "./App";
 
-test('renders learn react link', () => {
+test("renders the bridge header and tabs", () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(screen.getByText(/cross-chain bridge/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /connect metamask/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^bridge$/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^explorer$/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^metrics$/i })).toBeInTheDocument();
 });

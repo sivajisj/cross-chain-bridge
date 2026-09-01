@@ -14,7 +14,6 @@ function int(name, fallback) {
 const config = {
   sepoliaRpcUrl: required("SEPOLIA_RPC_URL"),
   amoyRpcUrl: required("AMOY_RPC_URL"),
-  relayerPrivateKey: required("RELAYER_PRIVATE_KEY"),
   bridgeSourceAddress: required("BRIDGE_SOURCE_ADDRESS"),
   bridgeDestAddress: required("BRIDGE_DEST_ADDRESS"),
   databaseUrl: required("DATABASE_URL"),
