@@ -1,104 +1,123 @@
-# Security & Risk Analysis
+# Security Model
 
-## Architecture overview
+> This is a production-oriented architecture prototype. It has not been
+> professionally audited and should not be used with real mainnet funds.
 
-This bridge uses a lock-and-mint pattern across two EVM chains:
-- **Source chain (Ethereum Sepolia)**: Locks real ERC-20 tokens
-- **Destination chain (Polygon Amoy)**: Mints wrapped tokens 1:1
-- **Relayer**: Off-chain Node.js service connecting both chains
+## Trust Model
 
----
+### Validator Set
+- 5 independent validators, threshold of 3 required to authorize any mint or unlock
+- A single compromised validator key cannot mint tokens or release locked funds
+- Two simultaneously compromised validators cannot either (below threshold)
+- Three or more compromised validators (≥ threshold) can authorize fraudulent mints
 
-## Risk register
+### Owner
+- The contract owner can add/remove validators, update the threshold, and
+  register/enable/disable tokens
+- The owner cannot mint tokens or unlock funds directly (validators control that)
+- Owner key compromise allows validator set and token registry manipulation
+  but not immediate fund theft
 
-### R1 — Relayer compromise (HIGH)
-**Description**: If the relayer private key is stolen, attacker can mint unlimited wBRT on Polygon without locking real tokens.
+## Threat Model
 
-**Mitigation**:
-- Relayer wallet holds no user funds — only minting rights
-- `onlyOwner` on `mint()` limits blast radius to minting only
-- Implement multi-sig ownership (Gnosis Safe) for production
-- Rotate relayer keys regularly, store in HSM or AWS KMS
+### Replay Attacks
+- **Mitigated**: every messageId is a one-time nonce stored in `processedNonces`
+- A message processed on Amoy cannot be replayed on Sepolia (different messageIds,
+  since the messageId is derived from the source chain ID, tx hash, and log index)
+- A message from one bridge deployment cannot be replayed on another (EIP-712
+  domain separator binds to `verifyingContract` address and `chainId`)
 
----
+### Signature Attacks
+- **Mitigated**: EIP-712 typed data binding — every field (token, recipient,
+  amount, chainIds, bridge address) is committed in the signed digest
+- Changing any field after signing produces a different digest; signatures fail
+- Duplicate signer protection: same address counted only once per mint/unlock call
 
-### R2 — Reentrancy attack (MEDIUM → mitigated)
-**Description**: Malicious ERC-20 with callback could re-enter `lockTokens` before state updates.
+### Validator Compromise
+- **Partially mitigated**: threshold model requires ≥3 of 5 validators
+- **Residual risk**: if 3+ validators are compromised simultaneously, attackers
+  can mint arbitrary tokens or unlock arbitrary escrowed funds. Mitigation:
+  validators should run on separate infrastructure, ideally with hardware
+  signing keys (HSM)
 
-**Mitigation**:
-- `ReentrancyGuard` from OpenZeppelin applied to all state-changing functions
-- CEI (Checks-Effects-Interactions) pattern enforced — state updates before external calls
+### Relayer Compromise
+- **Low impact**: the relayer submits transactions but cannot authorize mints
+  or unlocks alone — it holds no validator key by design
+- A compromised relayer can delay or censor messages (liveness attack) but
+  cannot steal funds or mint tokens
+- **Residual risk**: relayer censorship — no automated failover in this
+  architecture; a stalled relayer requires manual restart
 
----
+### Reorg and Finality Risks
+- **Mitigated**: configurable `CONFIRMATIONS_REQUIRED` (default 5) before a
+  lock or burn event is considered finalized. Shallow reorgs (< confirmations)
+  are handled — the event is simply re-detected as CONFIRMING, not finalized.
+- **Residual risk**: deep reorgs (> confirmations) could allow double-spend.
+  For production, increase confirmations for high-value transfers.
 
-### R3 — Replay attack (HIGH → mitigated)
-**Description**: Relayer crash and restart could process same `TokenLocked` event twice, minting double wBRT.
+### Token Risks
+- **Mitigated**: token registry — only whitelisted tokens can be locked, minted,
+  or burned; `enableToken`/`disableToken` let the owner pull a single token
+  without pausing the whole bridge
+- Non-standard ERC-20s (fee-on-transfer, rebasing) are not supported and
+  will produce incorrect accounting if registered — `lockTokens` assumes the
+  amount transferred in equals the amount requested. Only standard tokens
+  should be registered.
+- Decimal normalization prevents value loss for tokens with ≤ 18 decimals
+  (verified by round-trip fuzz tests in `test/Fuzz.test.js`). Tokens with
+  more than 18 decimals are rejected at registration time.
 
-**Mitigation**:
-- Deterministic nonce derived from `keccak256(txHash)` — same event always produces same nonce
-- `processedNonces` mapping on both contracts permanently blocks reuse
-- In-memory `processedTxs` Set as first line of defence in relayer
+### Operational Risks
+- **Bridge pause**: owner can pause all operations via `pauseBridge()` on
+  either contract independently
+- **Token disable**: owner can disable a specific token without pausing the
+  whole bridge
+- **Emergency recovery**: no upgrade mechanism — redeployment required for
+  critical fixes. This is intentional (no proxy upgrade attack surface) but
+  means emergency response requires a coordinated redeployment and a
+  validator/owner re-signoff.
 
----
+## Slither Findings
 
-### R4 — Relayer downtime (MEDIUM)
-**Description**: If relayer goes offline, user tokens are locked on Ethereum with no wBRT minted.
+Full raw output is in `slither-report.txt` (regenerate with
+`python3 -m slither . --exclude-dependencies`). Slither found no high or
+medium severity issues. All findings are informational/optimization-level:
 
-**Mitigation**:
-- Startup catch-up: relayer queries past events on boot
-- Store last processed block in MongoDB for full recovery
-- Run multiple relayer instances with leader election
-- User-facing timeout with clear status in UI
+| Finding | Severity | Accepted? | Reason |
+|---|---|---|---|
+| `shadowing-local`: `WrappedToken` constructor params `name`/`symbol` shadow `ERC20.name()`/`symbol()` | Informational | Accepted | Standard OpenZeppelin constructor pattern — the params are consumed by `ERC20(name, symbol)` in the same statement and never referenced again; no functional ambiguity. |
+| `events-maths`: `setThreshold` on both `BridgeDest` and `BridgeSource` changes `threshold` without emitting an event | Low | Accepted, tracked as a follow-up | Off-chain monitoring currently reads `threshold()` directly rather than via events; adding a `ThresholdUpdated` event is a one-line, backwards-compatible fix worth picking up before a real deployment. |
+| `pragma`: 6 different Solidity version constraints in the dependency tree | Informational | Accepted | Entirely from OpenZeppelin's own imports (`^0.8.20` through `>=0.4.16` on old interfaces); our own contracts all pin `^0.8.28` consistently. Not something we control without vendoring OZ. |
+| `costly-loop`: `validators.pop()` inside the removal loop in `removeValidator` (both contracts) | Informational | Accepted | The loop runs at most `validators.length` times (≤ a handful of validators by design) and `pop()` executes exactly once per call, on the matched index, not per iteration — this is Slither flagging a state-mutating call inside a loop body in general, not an actual O(n) cost blowup here. |
 
----
+## Known Limitations
 
-### R5 — Smart contract bug (HIGH)
-**Description**: Undiscovered vulnerability in bridge contracts could drain locked funds.
+1. No upgrade mechanism — contract bugs require redeployment
+2. Validator set is managed on-chain by one owner key — HSM recommended for production
+3. No fee mechanism — relayer operates at cost with no on-chain compensation
+4. Single relayer instance — liveness depends on the relayer staying online
+5. No MEV protection on unlock/mint transactions
+6. Token registry managed centrally — no decentralized governance
+7. `setThreshold` does not emit an event (see Slither findings above)
+8. Not audited — for educational and portfolio demonstration purposes only
 
-**Mitigation**:
-- Full test coverage with Hardhat
-- OpenZeppelin battle-tested base contracts
-- Professional audit before mainnet deployment
-- `Pausable` emergency stop — owner can freeze bridge instantly
-- Bridge deposit limit: 1,000,000 tokens per transaction
+## Test Coverage
 
----
+Statement coverage across all bridge contracts is ~97% (see `coverage/index.html`,
+generated via `npx hardhat coverage`). The remaining gaps are:
+- `BridgeDest.unpauseBridge()` — trivial one-liner, exercised on `BridgeSource`
+  but not separately on `BridgeDest`
+- The `decimals_ > 18` branch of `TokenRegistry.normalize`/`denormalize` —
+  unreachable in practice, since `registerToken` already rejects any token
+  with more than 18 decimals at registration time
 
-### R6 — Chain reorganisation (LOW)
-**Description**: Shallow reorg on Ethereum could invalidate a `TokenLocked` event the relayer already processed, causing wBRT to exist without backing.
+## Emergency Procedures
 
-**Mitigation**:
-- Wait for minimum 12 block confirmations before processing (1 Ethereum epoch)
-- Monitor for reorgs and implement rollback logic for production
-
----
-
-### R7 — Oracle / price manipulation (OUT OF SCOPE)
-**Description**: This bridge is 1:1 — no price oracle is used. Not applicable for this implementation.
-
----
-
-## Security checklist
-
-- [x] ReentrancyGuard on all state-changing functions
-- [x] CEI pattern enforced
-- [x] Nonce-based replay protection on both chains
-- [x] Pausable emergency stop mechanism
-- [x] onlyOwner access control on mint/unlock
-- [x] Input validation on all functions
-- [x] Bridge deposit limits
-- [ ] Multi-sig ownership (Gnosis Safe) — production requirement
-- [ ] Professional smart contract audit — production requirement
-- [ ] Block confirmation delay — production requirement
-- [ ] HSM key storage for relayer — production requirement
-
----
-
-## Incident response
-
-If a vulnerability is discovered:
-1. Call `pauseBridge()` on both contracts immediately
-2. Investigate scope of exploit
-3. Deploy patched contracts
-4. Verify all locked funds are accounted for
-5. Resume with `unpauseBridge()` after verification
+1. **Pause the bridge**: `bridgeSource.pauseBridge()` and `bridgeDest.pauseBridge()`
+2. **Disable a specific token**: `bridgeSource.disableToken(tokenAddress)` and
+   `bridgeDest.disableToken(tokenAddress)`
+3. **Remove a compromised validator**: `bridgeDest.removeValidator(address)` /
+   `bridgeSource.removeValidator(address)` (only if remaining validators ≥ threshold)
+4. **Stop the relayer**: `Ctrl+C` — it shuts down cleanly and resumes from
+   the last scanned block per chain on restart. No funds are at risk when
+   the relayer is stopped; it holds no validator key and cannot move funds itself.

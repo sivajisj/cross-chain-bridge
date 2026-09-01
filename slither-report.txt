@@ -1,0 +1,69 @@
+'npx hardhat clean' running (wd: /home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge)
+'npx hardhat clean --global' running (wd: /home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge)
+Unexpected output from Hardhat, trying to parse it anyway: [dotenv@17.3.1] injecting env (5) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🛡️ auth for agents: https://vestauth.com
+{"root":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge","configFile":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/hardhat.config.js","sources":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/contracts","cache":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/cache","artifacts":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/artifacts","tests":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/test","ignition":"/home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge/ignition"}
+
+Problem deserializing hardhat configuration, using defaults: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+'npx hardhat compile --force' running (wd: /home/sim-ind-0037/Desktop/sj/cross-chain/cross-chain-bridge)
+INFO:Detectors:
+Detector: shadowing-local
+WrappedToken.constructor(string,string,uint8).name (contracts/WrappedToken.sol#22) shadows:
+	- ERC20.name() (node_modules/@openzeppelin/contracts/token/ERC20/ERC20.sol#52-54) (function)
+	- IERC20Metadata.name() (node_modules/@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol#15) (function)
+WrappedToken.constructor(string,string,uint8).symbol (contracts/WrappedToken.sol#23) shadows:
+	- ERC20.symbol() (node_modules/@openzeppelin/contracts/token/ERC20/ERC20.sol#60-62) (function)
+	- IERC20Metadata.symbol() (node_modules/@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol#20) (function)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#local-variable-shadowing
+INFO:Detectors:
+Detector: events-maths
+BridgeDest.setThreshold(uint256) (contracts/BridgeDest.sol#198-202) should emit an event for: 
+	- threshold = newThreshold (contracts/BridgeDest.sol#201) 
+BridgeSource.setThreshold(uint256) (contracts/BridgeSource.sol#185-189) should emit an event for: 
+	- threshold = newThreshold (contracts/BridgeSource.sol#188) 
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-events-arithmetic
+INFO:Detectors:
+Detector: pragma
+6 different versions of Solidity are used:
+	- Version constraint ^0.8.20 is used by:
+		-^0.8.20 (node_modules/@openzeppelin/contracts/access/Ownable.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/token/ERC20/ERC20.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/Context.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/Panic.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/Pausable.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/ReentrancyGuard.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/ShortStrings.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/StorageSlot.sol#5)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/cryptography/ECDSA.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/Math.sol#4)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/SafeCast.sol#5)
+		-^0.8.20 (node_modules/@openzeppelin/contracts/utils/math/SignedMath.sol#4)
+	- Version constraint >=0.4.16 is used by:
+		->=0.4.16 (node_modules/@openzeppelin/contracts/interfaces/IERC5267.sol#4)
+		->=0.4.16 (node_modules/@openzeppelin/contracts/token/ERC20/IERC20.sol#4)
+	- Version constraint >=0.8.4 is used by:
+		->=0.8.4 (node_modules/@openzeppelin/contracts/interfaces/draft-IERC6093.sol#4)
+	- Version constraint >=0.6.2 is used by:
+		->=0.6.2 (node_modules/@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol#4)
+	- Version constraint ^0.8.24 is used by:
+		-^0.8.24 (node_modules/@openzeppelin/contracts/utils/Bytes.sol#4)
+		-^0.8.24 (node_modules/@openzeppelin/contracts/utils/Strings.sol#4)
+		-^0.8.24 (node_modules/@openzeppelin/contracts/utils/cryptography/EIP712.sol#4)
+		-^0.8.24 (node_modules/@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol#4)
+	- Version constraint ^0.8.28 is used by:
+		-^0.8.28 (contracts/BridgeDest.sol#2)
+		-^0.8.28 (contracts/BridgeSource.sol#2)
+		-^0.8.28 (contracts/MockERC20.sol#2)
+		-^0.8.28 (contracts/MockToken6.sol#2)
+		-^0.8.28 (contracts/MockToken8.sol#2)
+		-^0.8.28 (contracts/TokenRegistry.sol#2)
+		-^0.8.28 (contracts/WrappedToken.sol#2)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#different-pragma-directives-are-used
+INFO:Detectors:
+Detector: costly-loop
+BridgeDest.removeValidator(address) (contracts/BridgeDest.sol#184-196) has costly operations inside a loop:
+	- validators.pop() (contracts/BridgeDest.sol#191)
+BridgeSource.removeValidator(address) (contracts/BridgeSource.sol#171-183) has costly operations inside a loop:
+	- validators.pop() (contracts/BridgeSource.sol#178)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#costly-operations-inside-a-loop
+INFO:Slither:. analyzed (29 contracts with 102 detectors), 7 result(s) found

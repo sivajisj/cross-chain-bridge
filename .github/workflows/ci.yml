@@ -1,0 +1,141 @@
+name: Bridge CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    name: Contracts + Relayer Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge
+          POSTGRES_DB: bridge_relayer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install relayer dependencies
+        run: npm ci
+        working-directory: relayer
+
+      - name: Run relayer unit tests
+        run: npm test
+        working-directory: relayer
+
+      - name: Run contract + integration tests
+        run: npx hardhat test
+        env:
+          CI: true
+          TEST_DATABASE_URL: postgres://bridge:bridge@localhost:5432/bridge_relayer_test
+
+  slither:
+    name: Slither Static Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Slither
+        run: pip install slither-analyzer
+
+      - name: Compile contracts
+        run: npx hardhat compile
+        env:
+          CI: true
+
+      - name: Run Slither
+        run: python -m slither . --exclude-dependencies --json slither-output.json || true
+
+      - name: Upload Slither report
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-report
+          path: slither-output.json
+
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge
+          POSTGRES_DB: bridge_relayer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install relayer dependencies
+        run: npm ci
+        working-directory: relayer
+
+      - name: Generate coverage report
+        run: npx hardhat coverage
+        env:
+          CI: true
+          TEST_DATABASE_URL: postgres://bridge:bridge@localhost:5432/bridge_relayer_test
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/

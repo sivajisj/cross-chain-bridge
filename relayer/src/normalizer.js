@@ -29,4 +29,15 @@ function denormalize(normalized, decimals) {
   return norm * (10n ** (d - NORMALIZED_DECIMALS));
 }
 
-module.exports = { normalize, denormalize, NORMALIZED_DECIMALS };
+// Tokens with fewer than 18 decimals lose precision on a round trip only
+// if the raw amount isn't itself a whole unit at that decimal count — never
+// true for on-chain integer amounts, since normalize's multiply-then-divide
+// always recovers the original exactly. Used by fuzz tests to confirm that
+// invariant rather than assume it.
+function roundTripLossless(amount, decimals) {
+  const norm = normalize(amount, decimals);
+  const back = denormalize(norm, decimals);
+  return back === BigInt(amount);
+}
+
+module.exports = { normalize, denormalize, roundTripLossless, NORMALIZED_DECIMALS };
