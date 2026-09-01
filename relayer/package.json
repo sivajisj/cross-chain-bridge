@@ -1,10 +1,11 @@
 {
   "name": "relayer",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Persistent, recoverable cross-chain relayer for the bridge",
+  "main": "relayer.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node relayer.js",
+    "test": "mocha"
   },
   "keywords": [],
   "author": "",
@@ -12,6 +13,11 @@
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^17.3.1",
-    "ethers": "^6.16.0"
+    "ethers": "^6.16.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "chai": "^4.5.0",
+    "mocha": "^10.7.3"
   }
 }

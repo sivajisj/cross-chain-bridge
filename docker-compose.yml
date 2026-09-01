@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bridge-relayer-db
+    environment:
+      POSTGRES_USER: bridge
+      POSTGRES_PASSWORD: bridge
+      POSTGRES_DB: bridge_relayer
+    ports:
+      - "5432:5432"
+    volumes:
+      - bridge_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  bridge_pg_data:

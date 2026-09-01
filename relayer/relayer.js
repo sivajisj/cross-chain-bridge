@@ -1,109 +1,124 @@
 require("dotenv").config();
 const { ethers } = require("ethers");
+
+const config = require("./src/config");
+const db = require("./src/db");
+const processor = require("./src/processor");
 const BridgeSourceABI = require("./abis/BridgeSource.json");
 const BridgeDestABI = require("./abis/BridgeDest.json");
 
 // ── providers (one per chain) ──────────────────────────────────
-const sepoliaProvider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-const amoyProvider    = new ethers.JsonRpcProvider(process.env.AMOY_RPC_URL);
+const sourceProvider = new ethers.JsonRpcProvider(config.sepoliaRpcUrl);
+const destProvider = new ethers.JsonRpcProvider(config.amoyRpcUrl);
 
-// ── relayer wallet (signs mint() txs on Polygon) ───────────────
-const relayerWallet = new ethers.Wallet(
-  process.env.RELAYER_PRIVATE_KEY,
-  amoyProvider
-);
+// ── relayer wallet (signs mint() txs on the destination chain) ─
+const relayerWallet = new ethers.Wallet(config.relayerPrivateKey, destProvider);
 
-// ── contracts ──────────────────────────────────────────────────
+// ── contracts ───────────────────────────────────────────────────
 const bridgeSource = new ethers.Contract(
-  process.env.BRIDGE_SOURCE_ADDRESS,
+  config.bridgeSourceAddress,
   BridgeSourceABI.abi,
-  sepoliaProvider  // read-only, just listening
+  sourceProvider // read-only, just scanning for events
 );
 
 const bridgeDest = new ethers.Contract(
-  process.env.BRIDGE_DEST_ADDRESS,
+  config.bridgeDestAddress,
   BridgeDestABI.abi,
-  relayerWallet    // needs signer to call mint()
+  relayerWallet // needs a signer to call mint()
 );
 
-// ── track processed events to prevent double minting ──────────
-const processedTxs = new Set();
+let stopping = false;
 
-// ── core handler ───────────────────────────────────────────────
-async function handleTokenLocked(user, amount, timestamp, event) {
-  const txHash = event.log.transactionHash;
-
-  if (processedTxs.has(txHash)) {
-    console.log(`Already processed tx ${txHash} — skipping`);
-    return;
-  }
-
-  console.log("\n── TokenLocked event detected ──────────────────");
-  console.log("User:      ", user);
-  console.log("Amount:    ", ethers.formatEther(amount), "BRT");
-  console.log("Tx hash:   ", txHash);
-
+// One full cycle: scan for new locks, advance confirmations, submit
+// anything that's ready. Every step is idempotent, so it is always
+// safe to run this again even if the previous tick crashed midway.
+async function tick() {
   try {
-    // Generate deterministic nonce from tx hash
-    // Same input always produces same nonce — safe to retry
-    const nonce = ethers.keccak256(ethers.toUtf8Bytes(txHash));
-    console.log("Nonce:     ", nonce);
+    const latestBlock = await sourceProvider.getBlockNumber();
+    const lastScanned = await db.getCursor(
+      config.databaseUrl,
+      config.sourceChainId,
+      latestBlock - config.startBlockLookback
+    );
+    const fromBlock = lastScanned + 1;
 
-    // Check if already minted on dest chain (extra safety)
-    const alreadyMinted = await bridgeDest.processedNonces(nonce);
-    if (alreadyMinted) {
-      console.log("Already minted on dest chain — skipping");
-      processedTxs.add(txHash);
-      return;
+    if (fromBlock <= latestBlock) {
+      const toBlock = Math.min(latestBlock, fromBlock + config.eventScanBatchSize - 1);
+
+      const detected = await processor.scanForNewMessages({
+        databaseUrl: config.databaseUrl,
+        bridgeSource,
+        config,
+        fromBlock,
+        toBlock,
+      });
+
+      if (detected.length > 0) {
+        console.log(`Detected ${detected.length} new lock event(s) in blocks ${fromBlock}-${toBlock}`);
+      }
+
+      await db.setCursor(config.databaseUrl, config.sourceChainId, toBlock);
     }
 
-    console.log("Minting wBRT on Polygon Amoy...");
-    const tx = await bridgeDest.mint(user, amount, nonce);
-    console.log("Mint tx sent:", tx.hash);
+    await processor.checkFinality({
+      databaseUrl: config.databaseUrl,
+      sourceProvider,
+      config,
+    });
 
-    const receipt = await tx.wait();
-    console.log("Mint confirmed in block:", receipt.blockNumber);
+    const processed = await processor.processReadyMessages({
+      databaseUrl: config.databaseUrl,
+      bridgeDest,
+      config,
+    });
 
-    processedTxs.add(txHash);
-    console.log("Done — user received wBRT on Polygon");
-
+    for (const message of processed) {
+      console.log(`Message ${message.message_id} -> ${message.status}`);
+    }
   } catch (err) {
-    console.error("Mint failed:", err.message);
+    console.error("Relayer tick failed:", err.message);
   }
 }
 
-// ── start listening ────────────────────────────────────────────
 async function start() {
   console.log("Relayer starting...");
   console.log("Relayer wallet:", relayerWallet.address);
 
-  const sepoliaBlock = await sepoliaProvider.getBlockNumber();
-  const amoyBlock    = await amoyProvider.getBlockNumber();
-  console.log("Sepolia block:", sepoliaBlock);
-  console.log("Amoy block:   ", amoyBlock);
+  await db.migrate(config.databaseUrl);
+  console.log("Database schema ready.");
 
-  // Catch up on missed events since last 1000 blocks
-  // (in production you'd store the last processed block in a DB)
-  console.log("\nChecking for past events...");
-  const pastEvents = await bridgeSource.queryFilter(
-    bridgeSource.filters.TokenLocked(),
-    sepoliaBlock - 9,
-    sepoliaBlock
+  console.log("Recovering unfinished messages from the previous run...");
+  const recovered = await processor.recoverUnfinishedMessages({
+    databaseUrl: config.databaseUrl,
+    destProvider,
+    bridgeDest,
+    config,
+  });
+  console.log(`Recovery pass touched ${recovered.length} message(s).`);
+
+  console.log(
+    `Polling every ${config.pollIntervalMs}ms, ${config.confirmationsRequired} confirmations required, ` +
+      `max ${config.maxRetries} retries.`
   );
 
-  if (pastEvents.length > 0) {
-    console.log(`Found ${pastEvents.length} past events — processing...`);
-    for (const event of pastEvents) {
-      const { user, amount, timestamp } = event.args;
-      await handleTokenLocked(user, amount, timestamp, event);
-    }
-  } else {
-    console.log("No past events found.");
+  while (!stopping) {
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
   }
 
-  // Listen for new events going forward
-  console.log("\nListening for new TokenLocked events on Sepolia...");
-  bridgeSource.on("TokenLocked", handleTokenLocked);
+  console.log("Relayer stopped.");
+  await db.closePool();
 }
 
-start().catch(console.error);
+process.on("SIGINT", () => {
+  console.log("\nShutting down...");
+  stopping = true;
+});
+process.on("SIGTERM", () => {
+  stopping = true;
+});
+
+start().catch((err) => {
+  console.error("Fatal relayer error:", err);
+  process.exit(1);
+});
