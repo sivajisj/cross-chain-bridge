@@ -23,11 +23,11 @@ export const CONFIG = {
   // scripts/deploy-dest.js, then replace these three addresses before
   // bridging against a live network — this frontend will otherwise call
   // functions that don't exist on the currently-deployed bytecode.
-  ADDRESSES: {
-    mockToken:    "0xe9a5b54EC0c7B8887471b2FE0890780d32351E5b",
-    bridgeSource: "0xF30f2aB2EC89C5Cff7A31554C8117CD7345dbDc8",
-    bridgeDest:   "0x80E0E536d5827895E170E2D4F0d19bc1756A51E4",
-  },
+ADDRESSES: {
+  mockToken:    "0xe525bD36eb1BA6438345862938F04C7269B8515c",
+  bridgeSource: "0xabf0C2500c70BF43CCad444b510F2e7579576905",
+  bridgeDest:   "0x99b3480DDde7904f849CbAAD866B04F5df0A3a05",
+},
 
   // Bridge explorer + metrics API (relayer's Express server)
   API_URL: "http://localhost:3001",

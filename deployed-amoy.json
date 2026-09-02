@@ -1,6 +1,6 @@
 {
   "network": "amoy",
-  "bridgeDest": "0x80E0E536d5827895E170E2D4F0d19bc1756A51E4",
+  "bridgeDest": "0x99b3480DDde7904f849CbAAD866B04F5df0A3a05",
   "deployer": "0x3F7032d3fD8aA2380a8cc7EE1b0Ed8AB7Eb6Fcd6",
   "validators": [
     "0x364830361f4c40756E3b6F7bC436d56da8FB7A31",
@@ -10,5 +10,7 @@
     "0xB0344ab208Ae8Fc59f9F63C1f4b076a01bf6C1b8"
   ],
   "threshold": 3,
-  "timestamp": "2026-09-01T10:02:27.421Z"
+  "sourceToken": "0xe525bD36eb1BA6438345862938F04C7269B8515c",
+  "wrappedToken": "0x71a943d4cBC2E026AF08906C0133Ec6235b77E2C",
+  "timestamp": "2026-09-02T05:53:39.802Z"
 }

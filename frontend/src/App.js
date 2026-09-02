@@ -541,16 +541,34 @@ export default function App() {
   const [chainId,  setChainId]  = useState(null);
 
   const connect = async () => {
-    if (!window.ethereum) { alert("MetaMask not found."); return; }
-    const p = new ethers.BrowserProvider(window.ethereum);
-    const [acct] = await p.send("eth_requestAccounts", []);
-    const net = await p.getNetwork();
-    setProvider(p);
-    setAccount(acct);
-    setChainId(net.chainId.toString(16));
-    window.ethereum.on("accountsChanged", ([a]) => setAccount(a));
-    window.ethereum.on("chainChanged", () => window.location.reload());
-  };
+  // When multiple wallets are installed (MetaMask + Phantom), each
+  // injects into window.ethereum.providers[]. We pick MetaMask
+  // specifically by checking isMetaMask. If only one wallet is
+  // installed, window.ethereum is used directly.
+  let ethereumProvider = null;
+
+  if (window.ethereum?.providers?.length > 0) {
+    // Multiple wallets — find MetaMask specifically
+    ethereumProvider = window.ethereum.providers.find(p => p.isMetaMask && !p.isPhantom);
+  } else if (window.ethereum?.isMetaMask) {
+    // Only MetaMask installed
+    ethereumProvider = window.ethereum;
+  }
+
+  if (!ethereumProvider) {
+    alert("MetaMask not found. Please install MetaMask from metamask.io");
+    return;
+  }
+
+  const p = new ethers.BrowserProvider(ethereumProvider);
+  const [acct] = await p.send("eth_requestAccounts", []);
+  const net  = await p.getNetwork();
+  setProvider(p);
+  setAccount(acct);
+  setChainId(net.chainId.toString(16));
+  ethereumProvider.on("accountsChanged", ([a]) => setAccount(a));
+  ethereumProvider.on("chainChanged",    () => window.location.reload());
+};
 
   return (
     <div className="app">
