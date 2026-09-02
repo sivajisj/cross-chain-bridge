@@ -28,6 +28,14 @@ const config = {
   startBlockLookback: int("START_BLOCK_LOOKBACK", 2000),
   eventScanBatchSize: int("EVENT_SCAN_BATCH_SIZE", 2000),
   threshold: int("THRESHOLD", 3),
+
+  // Solana leg (Phase 6) — all optional. If SOLANA_RPC_URL/SOLANA_PROGRAM_ID
+  // are unset, the relayer simply skips the Solana scan loop and behaves
+  // exactly as it did before Phase 6.
+  solanaRpcUrl: process.env.SOLANA_RPC_URL || null,
+  solanaProgramId: process.env.SOLANA_PROGRAM_ID || null,
+  solanaCommitment: process.env.SOLANA_COMMITMENT || "finalized",
+  solanaScanBatchSize: int("SOLANA_SCAN_BATCH_SIZE", 200),
 };
 
 module.exports = config;

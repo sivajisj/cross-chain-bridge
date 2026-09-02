@@ -1,5 +1,7 @@
 require("dotenv").config();
 const { ethers } = require("ethers");
+const { Connection } = require("@solana/web3.js");
+const anchor = require("@anchor-lang/core");
 
 const config = require("./src/config");
 const db = require("./src/db");
@@ -8,6 +10,9 @@ const logger = require("./src/logger");
 const { startApiServer } = require("./src/api");
 const BridgeSourceABI = require("./abis/BridgeSource.json");
 const BridgeDestABI = require("./abis/BridgeDest.json");
+const solanaAdapter = require("./src/solana/adapter");
+const { deriveEd25519Keypair } = require("./src/solana/signer");
+const bridgeIdl = require("./src/solana/idl.json");
 
 // ── Providers ───────────────────────────────────────────────────────────────
 const sourceProvider = new ethers.JsonRpcProvider(config.sepoliaRpcUrl);
@@ -54,6 +59,23 @@ const bridgeDestRead   = new ethers.Contract(config.bridgeDestAddress, BridgeDes
 
 const bridgeSource = bridgeSourceRead.connect(sourceValidatorWallets[0]); // needs a signer to call unlockTokens()
 const bridgeDest   = bridgeDestRead.connect(destValidatorWallets[0]);     // needs a signer to call mint()
+
+// ── Solana leg (Phase 6) — optional ─────────────────────────────────────────
+// Only set up if SOLANA_RPC_URL/SOLANA_PROGRAM_ID are configured; otherwise
+// the relayer runs exactly as it did before Phase 6.
+let solanaConnection = null;
+let solanaProgram = null;
+let solanaValidatorKeypairs = null;
+
+if (config.solanaRpcUrl && config.solanaProgramId) {
+  solanaConnection = new Connection(config.solanaRpcUrl, config.solanaCommitment);
+  solanaValidatorKeypairs = validatorKeys.map((k) => deriveEd25519Keypair(k));
+  const solanaWallet = new anchor.Wallet(solanaValidatorKeypairs[0]);
+  const solanaProvider = new anchor.AnchorProvider(solanaConnection, solanaWallet, {
+    commitment: config.solanaCommitment,
+  });
+  solanaProgram = new anchor.Program({ ...bridgeIdl, address: config.solanaProgramId }, solanaProvider);
+}
 
 let stopping = false;
 
@@ -106,6 +128,33 @@ async function tick() {
       destProvider,
       config,
     });
+
+    // Third scan loop: Solana burns of Sepolia-origin wrapped tokens,
+    // submitted as unlocks against the existing bridgeSource contract.
+    // 'finalized' commitment means detected burns are already terminal, so
+    // there's no separate finality wait like the two EVM legs above.
+    if (solanaProgram) {
+      const solanaDetected = await solanaAdapter.scanForSolanaBurnMessages({
+        databaseUrl: config.databaseUrl,
+        connection: solanaConnection,
+        program: solanaProgram,
+        config,
+      });
+      if (solanaDetected.length > 0) {
+        logger.info("events_detected", { label: "solana_burn", count: solanaDetected.length });
+      }
+
+      const solanaUnlocked = await solanaAdapter.processSolanaBurnsReadyForUnlock({
+        databaseUrl: config.databaseUrl,
+        bridgeSource,
+        config,
+        validatorWallets: destValidatorWallets, // signing is provider-agnostic, same convention as processReadyMessages below
+        submitUnlockMessage: processor.submitUnlockMessage,
+      });
+      for (const message of solanaUnlocked) {
+        logger.info("message_status_changed", { messageId: message.message_id, status: message.status });
+      }
+    }
 
     const processed = await processor.processReadyMessages({
       databaseUrl: config.databaseUrl,

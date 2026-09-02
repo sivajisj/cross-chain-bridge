@@ -312,6 +312,80 @@ Opens at `http://localhost:3000`.
 
 ---
 
+## Solana Bridge Leg (Phase 6)
+
+A second bridge leg, **Solana devnet ↔ Ethereum Sepolia**, alongside the
+Sepolia ↔ Amoy leg above. The Solana side is a single Anchor program
+(`solana-program/`) that plays both the "source" (lock/unlock native SPL)
+and "destination" (mint/burn wrapped SPL) roles; the existing Node.js
+relayer gets a third scan loop (`relayer/src/solana/`) that plugs into the
+same PostgreSQL state machine, message model, and decimal normalizer used
+by the EVM legs — nothing about the Sepolia ↔ Amoy path changes.
+
+### Solana program: build, test, deploy
+
+```bash
+cd solana-program
+yarn install
+anchor build
+
+# Run the Anchor integration test suite against a local validator
+# (--validator legacy uses the classic solana-test-validator; the CLI's
+# new default, surfpool, isn't installed here)
+anchor test --validator legacy
+
+# Deploy to devnet (requires a funded devnet wallet)
+solana config set --url devnet
+anchor deploy
+```
+
+Deploying publishes `target/deploy/bridge.so` under the program ID declared
+in `programs/bridge/src/lib.rs` / `Anchor.toml` — regenerate both with
+`anchor keys sync` first if you want a different program ID. After
+deploying, an admin must call `initialize` (5 validator ed25519 pubkeys +
+threshold) and `register_native_token` / `register_wrapped_token` for each
+token the bridge should support, exactly like `TokenRegistry`/`BridgeDest`
+on the EVM side.
+
+### Running the Solana adapter
+
+The relayer's Solana scan loop is entirely optional — set these two env
+vars and it starts automatically; leave them unset and the relayer behaves
+exactly as it did before Phase 6:
+
+```env
+# relayer/.env additions
+SOLANA_RPC_URL=https://api.devnet.solana.com
+SOLANA_PROGRAM_ID=<deployed bridge program id>
+SOLANA_COMMITMENT=finalized        # optional, defaults to finalized
+SOLANA_SCAN_BATCH_SIZE=200         # optional, signatures fetched per tick
+```
+
+The same `VALIDATOR_KEY_1..5` already used for EVM EIP-712 signing are
+reused to deterministically derive each validator's ed25519 keypair
+(`relayer/src/solana/signer.js`) — no separate Solana keys to manage for
+this demo setup.
+
+### What's live vs. not yet wired
+
+| Direction | Status |
+|---|---|
+| Solana `burn_wrapped` → Sepolia `unlockTokens` | **Live.** Reuses the already-deployed `BridgeSource.sol` and its existing EIP-712 signer/collector unchanged — `unlockTokens` doesn't care whether the burn happened on Amoy or Solana. |
+| Sepolia `lockTokens` → Solana `mint_wrapped` | **Implemented, not wired into the live scan loop.** `BridgeSource.sol`'s `TokenLocked` event carries no destination-chain field, and every lock it emits is already claimed by the Sepolia↔Amoy leg — reusing that same event stream for Solana too would let one locked deposit back wrapped tokens on *both* Amoy and Solana (an inflation bug). Making this live needs a dedicated Solana-bound lock source: either a second `BridgeSource`-like deployment on Sepolia, or a destination-aware extension to the existing one. `relayer/src/solana/adapter.js`'s `scanForSepoliaLockMessagesForSolana`/`submitSolanaMintMessage` and the program's `mint_wrapped`/`lock_tokens`/`unlock_tokens` instructions are fully implemented and covered by `solana-program/tests/bridge.ts`, just not called from `relayer.js`'s tick loop. |
+
+### Solana-side tests
+
+- `solana-program/tests/bridge.ts` — Anchor integration tests against a
+  local validator: initialize, register native/wrapped tokens, lock, mint
+  (threshold ed25519 verification via the Ed25519 sysvar), replay
+  rejection, below-threshold rejection, burn, unlock.
+- `relayer/test/unit/solana-adapter.test.js` — signing digest determinism,
+  PDA derivation, threshold signature collection, and the burn-detection
+  scan driving a row through `DETECTED → CONFIRMING → FINALIZED` against a
+  real Postgres test database with the Solana RPC calls mocked.
+
+---
+
 ## Running Tests
 
 ```bash
