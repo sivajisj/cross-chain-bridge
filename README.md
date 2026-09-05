@@ -2,7 +2,7 @@
 
 A production-grade cross-chain bridge that locks ERC-20 tokens on Ethereum and mints wrapped tokens on Polygon using a lock-and-mint pattern. Built with Solidity, Hardhat, ethers.js, and React.
 
----
+--- 
 
 ## Architecture
 
